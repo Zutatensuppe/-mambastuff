@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "spider_bmp.h"
 
 // TODO: draw statistics/infos next to the mamba map
 // punkte 
@@ -14,14 +15,14 @@
 // and maybe the speed of snakes? i dont remember
 
 // inner map size. edge is drawn around it
-#define MAP_W_PIXELS 455
-#define MAP_H_PIXELS 359
+#define MAP_W_PIXELS 455 // in pixels
+#define MAP_H_PIXELS 359 // in pixels
 
 // amount of cells in the map
 #define MAP_W_CELLS 38
 #define MAP_H_CELLS 30
 
-#define CELL_SIZE 11 // inner cell size. edge is drawn around it.
+#define CELL_SIZE 11 // inner cell size in pixels. edge is drawn around it.
 
 // size in pixels of edge around cells/map
 // the edge is ALWAYS drawn around the map
@@ -29,10 +30,16 @@
 // it was captured by the spider (i.e. the trail the spider leaves 
 // behind stays when the area got captured)
 // cell size is collapsed to 1 (2 cells next to each other share the edge)
-#define EDGE_SIZE 1
+#define EDGE_SIZE 1 // in pixels
 
-#define WIN_W (MAP_W_PIXELS)
-#define WIN_H (MAP_H_PIXELS)
+#define WIN_BORDER 16 // in pixels
+#define WIN_W (MAP_W_PIXELS + 2 * WIN_BORDER)
+#define WIN_H (MAP_H_PIXELS + 2 * WIN_BORDER)
+
+// colors in BGR format (0xBBGGRR)
+int color_black = 0x000000;
+int color_cyan = 0x00FFFF;
+int color_light_gray = 0xC0C0C0;
 
 bool claimed[MAP_W_CELLS][MAP_H_CELLS];       // claimed cells
 
@@ -97,7 +104,21 @@ void draw_cells() {
     for (int y = 0; y < MAP_H_CELLS; y++) {
         for (int x = 0; x < MAP_W_CELLS; x++) {
             if (claimed[x][y]) {
-                draw_rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE, 0xFF87CEFA); // light blue
+                draw_rect(WIN_BORDER + x * CELL_SIZE, WIN_BORDER + y * CELL_SIZE, CELL_SIZE, CELL_SIZE, 0xFF87CEFA); // light blue
+            }
+        }
+    }
+}
+
+void draw_bitmap(uint32_t bitmap, int x, int y, int bitmap_w) {
+    for (int dy = 0; dy < SPIDER_HEIGHT; dy++) {
+        for (int dx = 0; dx < SPIDER_WIDTH; dx++) {
+            int px = x + dx;
+            int py = y + dy;
+            if (px >= 0 && px < WIN_W && py >= 0 && py < WIN_H) {
+                uint32_t color = spider_pixels[dy * SPIDER_WIDTH + dx];
+                if (color == 0x00000000) continue; // skip transparent pixels
+                pixels[py * WIN_W + px] = color;
             }
         }
     }
@@ -105,34 +126,29 @@ void draw_cells() {
 
 // Draw the web lines on edges
 void draw_web() {
-    uint32_t web_color = 0xFFFFFFFF; // white
+    uint32_t path_color = 0x00000000; // black
 
-    // Horizontal edges
-    for (int y = 0; y <= MAP_H_CELLS; y++) {
+    // baseOffset: WIN_BORDER
+
+    int baseOffset = WIN_BORDER;
+
+    // Draw horizontal edges
+    for (int y = 0; y < MAP_H_CELLS + 1; y++) {
         for (int x = 0; x < MAP_W_CELLS; x++) {
-            if (past_path_h[x][y]) {
-                int px = x * CELL_SIZE;
-                int py = y * CELL_SIZE;
-                for (int i = 0; i < CELL_SIZE; i++) {
-                    int offset_x = px + i;
-                    if (offset_x >= 0 && offset_x < WIN_W && py >= 0 && py < WIN_H)
-                        pixels[py * WIN_W + offset_x] = web_color;
-                }
+            if (path_h[x][y]) {
+                int draw_x = baseOffset + x * CELL_SIZE;
+                int draw_y = baseOffset + y * CELL_SIZE;
+                draw_rect(draw_x, draw_y, CELL_SIZE, EDGE_SIZE, path_color);
             }
         }
     }
-
-    // Vertical edges
-    for (int x = 0; x <= MAP_W_CELLS; x++) {
-        for (int y = 0; y < MAP_H_CELLS; y++) {
-            if (past_path_v[x][y]) {
-                int px = x * CELL_SIZE;
-                int py = y * CELL_SIZE;
-                for (int i = 0; i < CELL_SIZE; i++) {
-                    int offset_y = py + i;
-                    if (px >= 0 && px < WIN_W && offset_y >= 0 && offset_y < WIN_H)
-                        pixels[offset_y * WIN_W + px] = web_color;
-                }
+    // Draw vertical edges
+    for (int y = 0; y < MAP_H_CELLS; y++) {
+        for (int x = 0; x < MAP_W_CELLS + 1; x++) {
+            if (path_v[x][y]) {
+                int draw_x = baseOffset + x * CELL_SIZE;
+                int draw_y = baseOffset + y * CELL_SIZE;
+                draw_rect(draw_x, draw_y, EDGE_SIZE, CELL_SIZE, path_color);
             }
         }
     }
@@ -140,30 +156,74 @@ void draw_web() {
 
 // Draw spider as a small red square centered on vertex
 void draw_spider() {
-    int px = spider_x;
-    int py = spider_y;
-    int size = 5; // 5x5 square
+    int sprite_w = SPIDER_WIDTH;
+    int sprite_h = SPIDER_HEIGHT;
 
-    draw_rect(px - size / 2, py - size / 2, size, size, 0xFFFF0000);
+    // Center the bitmap over the spider's pixel position
+    int draw_x = spider_x - sprite_w / 2;
+    int draw_y = spider_y - sprite_h / 2;
+
+    draw_bitmap(spider_pixels, draw_x, draw_y, sprite_w);
+}
+
+bool is_spider_on_cross_section() {
+    return spider_x % CELL_SIZE == 0 && spider_y % CELL_SIZE == 0;
 }
 
 void update_spider() {
-    if (!spider_vx && !spider_vy) return;
+    if (input_vx != 0 || input_vy != 0) {
+        // TODO: turning around is always allowed, even if the spider is not on a cross section
 
+        // if spider is on an edge, change its new velocity
+        if (is_spider_on_cross_section()) {
+            spider_vx = input_vx;
+            spider_vy = input_vy;
+        }
+        // otherwise, do nothing, keep the input queued
+    }
+
+    // update spider position based on velocity
     int new_x = spider_x + spider_vx;
     int new_y = spider_y + spider_vy;
 
     if (new_x < 0 || new_x > WIN_W || new_y < 0 || new_y > WIN_H) {
+        // make the spider stop if it goes out of bounds
         spider_vx = 0;
         spider_vy = 0;
-        debug_printf("Spider hit map edge and stopped.\n");
         return;
     }
 
     spider_x = new_x;
     spider_y = new_y;
 
-    debug_printf_fmt("Spider moved to %d,%d\n", spider_x, spider_y);
+    // if the spider is now on a cross section of cells, we need to update the path it is currently walking on
+    if (!is_spider_on_cross_section()) {
+        // Spider is not on a cross section, so we don't update the path
+        return;
+    }
+
+    // Convert pixel to grid coordinate
+    int vx = spider_x / CELL_SIZE;
+    int vy = spider_y / CELL_SIZE;
+
+    // Determine edge direction from last_vertex to current
+    int dx = vx - last_vertex_x;
+    int dy = vy - last_vertex_y;
+
+    // This edge has just been completed — mark it
+    if (dx == 1) {
+        path_h[last_vertex_x][vy] = true; // right
+    } else if (dx == -1) {
+        path_h[vx][vy] = true; // left
+    } else if (dy == 1) {
+        path_v[vx][last_vertex_y] = true; // down
+    } else if (dy == -1) {
+        path_v[vx][vy] = true; // up
+    }
+
+    // Update last vertex
+    last_vertex_x = vx;
+    last_vertex_y = vy;
 }
 
 void update_game() {
@@ -205,11 +265,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
 
-            clear_screen(0xFF0000FF); // clear blue background
+            clear_screen(color_light_gray); // background (light gray)
+
+            // draw the map:
+
+            // black edge around map
+            draw_rect(WIN_BORDER - EDGE_SIZE, WIN_BORDER - EDGE_SIZE, MAP_W_PIXELS + EDGE_SIZE + EDGE_SIZE, MAP_H_PIXELS + EDGE_SIZE + EDGE_SIZE, color_black);
+
+            // map background in cyan
+            draw_rect(WIN_BORDER, WIN_BORDER, MAP_W_PIXELS, MAP_H_PIXELS, color_cyan);
 
             draw_cells();  // Draw claimed areas only
             draw_web();    // Draw spider web edges
-            draw_spider();
+            draw_spider(); // Draw spider
 
             BITMAPINFO bmi = {0};
             bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);

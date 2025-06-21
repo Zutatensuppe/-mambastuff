@@ -1,0 +1,1 @@
+tcc -mwindows src\mamba.c src\spider_bmp.c -o mamba.exe
