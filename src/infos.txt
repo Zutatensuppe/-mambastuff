@@ -1,0 +1,10 @@
+
+
+mamba game size in grid cells:
+
+width:  35    0x25
+height: 29    0x1D
+total:  1015  0x3f7
+
+
+timer:  30    0x1E  (resets whenever area is claimed)
